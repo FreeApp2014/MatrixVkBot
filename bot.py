@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.8
 # -*- coding: utf-8 -*-
 
 # A simple chat client for matrix.
@@ -50,6 +50,25 @@ VK_POLLING_VERSION = '3'
 
 currentchat = {}
 
+chatEquality = {}
+
+def retrieve_vk_message_by_matrix_id(mtxId):
+  if mtxId in chatEquality:
+    return chatEquality[mtxId]
+  else: 
+    return None
+
+def retrieve_matrix_message_by_vk_id(vkId):
+  result = None
+  for mtxId, Id in chatEquality.items():
+    if Id == vkId:
+      result = mtxId
+      break
+  return result
+
+def store_vk_message_by_matrix_id(vkId, mtxId):
+  chatEquality[mtxId] = vkId
+
 def process_command(user,room,cmd,formated_message=None,format_type=None,reply_to_id=None,file_url=None,file_type=None):
   global client
   global log
@@ -60,17 +79,21 @@ def process_command(user,room,cmd,formated_message=None,format_type=None,reply_t
     session_data_room=None
     session_data_vk=None
     session_data_user=None
+    vkReplyTo=None
 
     if reply_to_id!=None and format_type=="org.matrix.custom.html" and formated_message!=None:
       # разбираем, чтобы получить исходное сообщение и ответ
-      log.debug("formated_message=%s"%formated_message)
+      vkReplyTo = retrieve_vk_message_by_matrix_id(reply_to_id)
       source_message=re.sub('<mx-reply><blockquote>.*<\/a><br>','', formated_message)
       source_message=re.sub('<mx-reply><blockquote>.*<\/a><br />','', source_message)
       source_message=re.sub('</blockquote></mx-reply>.*','', source_message)
       source_cmd=re.sub(r'.*</blockquote></mx-reply>','', formated_message.replace('\n',''))
       log.debug("source=%s"%source_message)
       log.debug("cmd=%s"%source_cmd)
-      cmd="> %s\n\n%s"%(source_message,source_cmd)
+      if vkReplyTo == None:
+        cmd="> %s\n\n%s"%(source_message,source_cmd)
+      else:
+        cmd=source_cmd
 
     if re.search('^@%s:.*'%conf.username, user.lower()) is not None:
       # отправленное нами же сообщение - пропускаем:
@@ -166,7 +189,7 @@ def process_command(user,room,cmd,formated_message=None,format_type=None,reply_t
             return False
       else:
         # отправка текста:
-        message_id=vk_send_text(session_data_vk["vk_id"],dialog["id"],cmd,dialog["type"])
+        message_id=vk_send_text(session_data_vk["vk_id"],dialog["id"],cmd,dialog["type"], None, vkReplyTo)
         if message_id == None:
           log.error("error vk_send_text() for user %s"%user)
           send_message(room,"не смог отправить сообщение в ВК - ошибка АПИ")
@@ -627,7 +650,7 @@ def get_new_vk_messages_v2(user):
       #new = api.execute(code='return API.messages.getLongPollHistory({});'.format(ts_pts))
       log.debug("try exec api.messages.getLongPollHistory()")
       new = api.messages.getLongPollHistory(
-          ts=data["users"][user]["vk"]["ts"],\
+          ts=data["users"][user]["vk"]["ts_polling"],\
           pts=data["users"][user]["vk"]["pts"],\
           lp_version=VK_POLLING_VERSION\
         )
@@ -797,7 +820,7 @@ def info_extractor(info):
     log.error("exception at execute info_extractor()")
     return None
 
-def vk_send_text(vk_id, chat_id, message, chat_type="user", forward_messages=None):
+def vk_send_text(vk_id, chat_id, message, chat_type="user", forward_messages=None, replyTo=None):
   global log
   message_id=None
   try:
@@ -806,9 +829,9 @@ def vk_send_text(vk_id, chat_id, message, chat_type="user", forward_messages=Non
     session = get_session(vk_id)
     api = vk.API(session, v=VK_API_VERSION)
     if chat_type!="user":
-      message_id=api.messages.send(peer_id=chat_id, random_id=random_id,  message=message, forward_messages=forward_messages)
+      message_id=api.messages.send(peer_id=chat_id, random_id=random_id,  message=message, forward_messages=forward_messages, reply_to=replyTo)
     else:
-      message_id=api.messages.send(user_id=chat_id, random_id=random_id, message=message, forward_messages=forward_messages)
+      message_id=api.messages.send(user_id=chat_id, random_id=random_id, message=message, forward_messages=forward_messages, reply_to=replyTo)
     # message_id содержит ID отправленного сообщения
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
@@ -1554,7 +1577,7 @@ def create_room(matrix_uid, room_name, avatar_data=None):
 
   return room.room_id;
 
-def send_html(room_id,html):
+def send_html(room_id,html, useType=False):
   global client
   global log
   log.debug("=start function=")
@@ -1571,7 +1594,10 @@ def send_html(room_id,html):
       log.error("Couldn't find room.")
       return False
   try:
-    room.send_html(html)
+    event=room.send_html(html)
+    if useType:
+      log.debug(event)
+      return event
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
     log.error("Unknown error at send message '%s' to room '%s'"%(html,room_id))
@@ -1674,7 +1700,7 @@ def on_message(event):
     file_type=None
 
     log.debug("new MATRIX message:")
-    log.debug(json.dumps(event, indent=4, sort_keys=True,ensure_ascii=False))
+    #log.debug(json.dumps(event, indent=4, sort_keys=True,ensure_ascii=False))
     if event['type'] == "m.room.member":
         # join:
         if event['content']['membership'] == "join":
@@ -1761,7 +1787,7 @@ def on_event(event):
   log.debug("=start function=")
   print("event:")
   print(event)
-  print(json.dumps(event, indent=4, sort_keys=True,ensure_ascii=False))
+  #print(json.dumps(event, indent=4, sort_keys=True,ensure_ascii=False))
 
 def on_invite(room, event):
   global client
@@ -1776,7 +1802,7 @@ def on_invite(room, event):
     print(room)
     print("event_data:")
     print(event)
-    print(json.dumps(event, indent=4, sort_keys=True,ensure_ascii=False))
+    #print(json.dumps(event, indent=4, sort_keys=True,ensure_ascii=False))
 
   # Просматриваем сообщения:
   for event_item in event['events']:
@@ -2071,6 +2097,7 @@ def start_vk_polls(check_iteration):
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
     log.error("exception at execute start_vk_polls()")
+    data["users"][user]["vk"]["exit"] = True
     return 0
 
 def get_name_from_url(url):
@@ -2337,6 +2364,14 @@ def send_photo_to_matrix(room,sender_name,attachment):
     return False
   return True
 
+attachmentHuman = {
+  "doc":"Документ",
+  "audio":"Аудио",
+  "photo":"Фотография",
+  "audio_message":"Голосове сообщение",
+  "video":"Видео"
+}
+
 def send_wall_to_matrix(room,sender_name,attachment):
   global log
   try:
@@ -2344,7 +2379,7 @@ def send_wall_to_matrix(room,sender_name,attachment):
     text=""
     if sender_name!=None:
       text+="<p><strong>%(sender_name)s</strong>:</p>\n"%{"sender_name":sender_name}
-    text+="<blockquote>\n<p>Запись на стене:</p>\n<p>%(wall_text)s</p>\n" % {"wall_text":attachment["wall"]["text"]}
+    text+="<blockquote>\n<p><a href='https://vk.com/wall%(from_id)s_%(post_id)s'>Запись на стене</a>:</p>\n<p>%(wall_text)s</p>\n" % {"from_id":attachment["wall"]["from_id"],"post_id":attachment["wall"]["id"],"wall_text":attachment["wall"]["text"]}
     # если на стене были вложения, то добавляем их как ссылки:
     if "attachments" in attachment["wall"]:
       for attachment in attachment["wall"]["attachments"]:
@@ -2365,7 +2400,7 @@ def send_wall_to_matrix(room,sender_name,attachment):
         elif attachment['type']=="doc":
           url=attachment["doc"]['url']
         if url!=None:
-          text+="<p>вложение: %(url)s</p>\n" % {"url":url}
+          text+="<p><a href='%(url)s'>%(type)s</a> </p>\n" % {"url":url, "type":attachmentHuman[attachment['type']]}
     text+="</blockquote>\n"
     if send_html(room,text)==False:
       log.error("send_html()")
@@ -2923,6 +2958,12 @@ def get_photo_url_from_photo_attachment(attachment):
     log.error(json.dumps(attachment, indent=4, sort_keys=True,ensure_ascii=False))
     return None
 
+def create_matrix_format_reply_to_vk(mtxId, vkMessage, sendingUser, room_id, sender_id):
+  msg = "<mx-reply><blockquote><a href=\"https://matrix.to/#/%s/%s\">In reply to "%(room_id,mtxId)
+  msg+="%s:</a><br> %s</blockquote></mx-reply><br>"%(sendingUser,vkMessage)
+  return msg
+
+
 def proccess_vk_message(bot_control_room,room,user,sender_name,m):
   global data
   global lock
@@ -2974,10 +3015,21 @@ def proccess_vk_message(bot_control_room,room,user,sender_name,m):
       text+="<p>%s</p>\n" % m["text"]
     elif 'reply_message' in m and m['reply_message']!=[]:
       log.debug("1")
-      if sender_name!=None:
-        text+="<p><strong>%(sender_name)s</strong>:</p>\n"%{"sender_name":sender_name}
       # это ответ на сообщение - добавляем текст сообщения, на который дан ответ:
-      text+=create_reply_forward_text_for_matrix(user,m['reply_message'])
+      mtxReplyTo = retrieve_matrix_message_by_vk_id(m["reply_message"]["id"])
+      if mtxReplyTo != None:
+        fwd=m['reply_message']
+        fwd_uid=fwd["from_id"]
+        fwd_text=fwd["text"]
+        user_profile=get_user_profile_by_uid(user,fwd_uid)
+        fwd_user_name=fwd_uid
+        if user_profile!=None:
+          fwd_user_name=user_profile["first_name"] + " " + user_profile["last_name"]
+          text+=create_matrix_format_reply_to_vk(mtxReplyTo, fwd_text, "<b>%s</b>"%(fwd_user_name), room, user)
+        if sender_name!=None:
+          text+="<p><strong>%(sender_name)s</strong>:</p>\n"%{"sender_name":sender_name}
+      else:
+        text+=create_reply_forward_text_for_matrix(user,m["reply_message"])
       text+="<p>%s</p>\n" % m["text"]
     else:
       log.debug("1")
@@ -2989,7 +3041,9 @@ def proccess_vk_message(bot_control_room,room,user,sender_name,m):
 
     if len(m["text"])>0:
       log.debug("send text='%s'"%text)
-      if send_html(room,text.replace('\n','<br>')) == True:
+      event = send_html(room,text.replace('\n','<br>'), True) 
+      if event != False:
+        store_vk_message_by_matrix_id(m["id"], event["event_id"])
         send_status=True
       else:
         bot_system_message(user,"Ошибка: не смог отправить сообщение из ВК в комнату: '%s' сообщение были от: %s"%(room,sender_name))
@@ -3011,13 +3065,23 @@ def proccess_vk_message(bot_control_room,room,user,sender_name,m):
         send_status=True
     # события в комнате:
     if "action" in m:
+      print(action)
       action=m["action"]
+      selfAction=(len(m["profiles"]) == 1)
       if action["type"]=="chat_kick_user":
-        if send_notice(room,"Пользователь %s вышел из комнаты"%sender_name) == False:
-          log.error("send_notice")
+        if selfAction: 
+          if send_notice(room,"Пользователь %s вышел из комнаты"%sender_name) == False:
+            log.error("send_notice")
+        else:
+          if send_notice(room,"Пользователь %s кикнул из комнаты пользователя%s %s"%(sender_name, m["profiles"][1]["first_name"], m["profiles"][1]["last_name"])) == False:
+            log.error("send_notice")
       elif action["type"]=="chat_invite_user":
-        if send_notice(room,"Пользователь %s вошёл в комнату"%sender_name) == False:
-          log.error("send_notice")
+        if selfAction:
+          if send_notice(room,"Пользователь %s вошёл в комнату"%sender_name) == False:
+            log.error("send_notice")
+        else: 
+          if send_notice(room,"Пользователь %s добавил в комнату пользователя%s %s"%(sender_name, m["profiles"][1]["first_name"], m["profiles"][1]["last_name"])) == False:
+            log.error("send_notice")
       else:
         # TODO добавить обработчики других событий:
         if send_notice(room,"Неизвестный тип события (%s) для пользователя %s"%(action["type"],sender_name)) == False:
@@ -3035,10 +3099,10 @@ def proccess_vk_message(bot_control_room,room,user,sender_name,m):
     return send_status
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
-    log.error("exceptions in proccess_vk_message()")
-    bot_system_message(user,"при разборе сообщения из ВК - произошли ошибки - не смог принять сообщение. Обратитесь к разработчику.")
-    log.error("json of vk_message:")
-    log.error(json.dumps(m, indent=4, sort_keys=True,ensure_ascii=False))
+    # log.error("exceptions in proccess_vk_message()")
+    # bot_system_message(user,"при разборе сообщения из ВК - произошли ошибки - не смог принять сообщение. Обратитесь к разработчику.")
+    # log.error("json of vk_message:")
+    # log.error(json.dumps(m, indent=4, sort_keys=True,ensure_ascii=False))
     return False
 
 def get_message_chat_type(conversations,peer_id):
@@ -3105,7 +3169,7 @@ def vk_receiver_thread(user):
                   # Ищем отправителя в профилях полученного сообщения:
                   for profile in res["profiles"]:
                     if profile["id"]==m["from_id"]:
-                      sender_name="%s %s"%(profile["first_name"],profile["last_name"])
+                      sender_name="<a href='https://vk.com/id%s'>%s %s </a>"%(profile["id"],profile["first_name"],profile["last_name"])
                 if proccess_vk_message(bot_control_room,room,user,sender_name,m) == False:
                   log.warning("proccess_vk_message(room=%s) return false"%(room))
                 # комнату нашли и сообщение в неё отправили - нет смысла перебирать оставшиеся комнаты
@@ -3175,7 +3239,7 @@ def vk_receiver_thread(user):
               log.debug("try find user id = %d in profiles"%m["peer_id"])
               for profile in res["profiles"]:
                 if profile["peer_id"]==m["peer_id"]:
-                  sender_name="<strong>%s %s:</strong> "%(profile["first_name"],profile["last_name"])
+                  sender_name="[%s]<strong>%s %s:</strong> "%(m["id"],profile["first_name"],profile["last_name"])
               if sender_name == None:
                 log.warning("not found sender_name in profiles. Profiles was:")
                 log.debug(json.dumps(res["profiles"], indent=4, sort_keys=True,ensure_ascii=False))
