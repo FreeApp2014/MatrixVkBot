@@ -53,21 +53,24 @@ currentchat = {}
 chatEquality = {}
 
 def retrieve_vk_message_by_matrix_id(mtxId):
-  if mtxId in chatEquality:
-    return chatEquality[mtxId]
+  save_data(data)
+  if mtxId in data["equality"]:
+    return data["equality"][mtxId]
   else: 
     return None
 
 def retrieve_matrix_message_by_vk_id(vkId):
   result = None
-  for mtxId, Id in chatEquality.items():
+  save_data(data)
+  for mtxId, Id in data["equality"].items():
     if Id == vkId:
       result = mtxId
       break
   return result
 
 def store_vk_message_by_matrix_id(vkId, mtxId):
-  chatEquality[mtxId] = vkId
+  data["equality"][mtxId] = vkId
+  save_data(data)
 
 def process_command(user,room,cmd,formated_message=None,format_type=None,reply_to_id=None,file_url=None,file_type=None):
   global client
@@ -207,7 +210,7 @@ def process_command(user,room,cmd,formated_message=None,format_type=None,reply_t
         log.error("save_message_id()")
         bot_system_message(user,'Ошибка: не смог сохранить идентификатор отправленного сообщения - внутренняя ошибка бота')
         return False
-      return True
+      return message_id
 
     # Комната управления:
     # в любом состоянии отмена - всё отменяет:
@@ -1436,6 +1439,8 @@ def load_data():
         log.warning("Битый файл сессии - сброс")
         reset=True
       else:
+        if not "equality" in data:
+          data["equality"] = {}
         # успешно загрузили файл состояния - он в хорошем состоянии - сохраняем его как бэкап:
         try:
           backup_name=conf.data_file+'.backup'
@@ -1756,18 +1761,21 @@ def on_message(event):
         log.debug("try lock before process_command()")
         with lock:
           log.debug("success lock before process_command()")
-          if process_command(\
-              event['sender'],\
-              event['room_id'],\
-              event['content']["body"],\
-              formated_message=formatted_body,\
-              format_type=format_type,\
-              reply_to_id=reply_to_id,\
-              file_url=file_url,\
-              file_type=file_type\
-            ) == False:
+          result = process_command(\
+            event['sender'],\
+            event['room_id'],\
+            event['content']["body"],\
+            formated_message=formatted_body,\
+            format_type=format_type,\
+            reply_to_id=reply_to_id,\
+            file_url=file_url,\
+            file_type=file_type\
+          ) 
+          if result == False:
             log.error("error process command: '%s'"%event['content']["body"])
             return False
+          if event["sender"] != "@vk-bot:neofetch.win":
+            store_vk_message_by_matrix_id(result, event["event_id"])
         log.debug("success lock() before access global data")
     else:
       log.warning("unknown type of event:")
@@ -2148,8 +2156,8 @@ def send_file_to_matrix(room,sender_name,attachment):
 
     if sender_name!=None:
       file_name=sender_name+' прислал файл: '+file_name
-
-    if matrix_send_file(room,mxc_url,file_name,mimetype,size) == False:
+    event = matrix_send_file(room,mxc_url,file_name,mimetype,size)
+    if event == False:
       log.error("send file to room")
       return False
   except Exception as e:
@@ -2157,7 +2165,7 @@ def send_file_to_matrix(room,sender_name,attachment):
     log.error("json of attachment:")
     log.error(json.dumps(attachment, indent=4, sort_keys=True,ensure_ascii=False))
     return False
-  return True
+  return event
 
 def create_reply_forward_text_for_matrix(user,fwd):
   global log
@@ -2168,8 +2176,8 @@ def create_reply_forward_text_for_matrix(user,fwd):
     user_profile=get_user_profile_by_uid(user,fwd_uid)
     fwd_user_name=fwd_uid
     if user_profile!=None:
-      fwd_user_name=user_profile["first_name"] + " " + user_profile["last_name"]
-    text="<blockquote>\n<p>В ответ на реплику от <strong>%(fwd_user)s</strong>:</p><p>%(fwd_text)s</p>\n" % {"fwd_user":fwd_user_name, "fwd_text":fwd_text}
+      fwd_user_name="<a href=\"https://vk.com/id%s\">"%(user_profile["id"])+ user_profile["first_name"] + " " + user_profile["last_name"] + "</a>"
+    text="<blockquote>\n<p>Пересланное сообщение от <strong>%(fwd_user)s</strong>:</p><p>%(fwd_text)s</p>\n" % {"fwd_user":fwd_user_name, "fwd_text":fwd_text}
     # если это ответ на вложения, то добавляем их как ссылки:
     descr="вложение"
     if "attachments" in fwd:
@@ -2193,7 +2201,7 @@ def create_reply_forward_text_for_matrix(user,fwd):
           descr="документ"
           url=attachment["doc"]['url']
         if url!=None:
-          text+="<p>%(descr)s: %(url)s</p>\n" % {"url":url,"descr":descr}
+          text+="<p><a href=\"%(url)s\">%(descr)s</a></p>\n" % {"url":url, "descr":descr}
     if "geo" in fwd:
       geo=fwd["geo"]
       if geo["type"]=='point':
@@ -2353,7 +2361,8 @@ def send_photo_to_matrix(room,sender_name,attachment):
     if sender_name!=None:
       file_name=sender_name+' прислал изображение: '+file_name
 
-    if matrix_send_image(room,mxc_url,file_name,mimetype,height,width,size) == False:
+    event = matrix_send_image(room,mxc_url,file_name,mimetype,height,width,size)
+    if event == False:
       log.error("send file to room")
       return False
   except Exception as e:
@@ -2362,7 +2371,7 @@ def send_photo_to_matrix(room,sender_name,attachment):
     log.error("json of attachment:")
     log.error(json.dumps(attachment, indent=4, sort_keys=True,ensure_ascii=False))
     return False
-  return True
+  return event
 
 attachmentHuman = {
   "doc":"Документ",
@@ -2402,7 +2411,8 @@ def send_wall_to_matrix(room,sender_name,attachment):
         if url!=None:
           text+="<p><a href='%(url)s'>%(type)s</a> </p>\n" % {"url":url, "type":attachmentHuman[attachment['type']]}
     text+="</blockquote>\n"
-    if send_html(room,text)==False:
+    event = send_html(room,text)
+    if event==False:
       log.error("send_html()")
       return False
   except Exception as e:
@@ -2411,7 +2421,7 @@ def send_wall_to_matrix(room,sender_name,attachment):
     log.error("json of attachment:")
     log.error(json.dumps(attachment, indent=4, sort_keys=True,ensure_ascii=False))
     return False
-  return True
+  return event
 
 def send_link_to_matrix(room,sender_name,attachment):
   global log
@@ -2445,51 +2455,43 @@ def send_link_to_matrix(room,sender_name,attachment):
     return False
   return True
 
-def send_video_to_matrix(room,sender_name,attachment):
+def send_video_to_matrix(room,sender_name,attachment, user):
   global log
+  global data
   ret=False
+  src=None
+  vidSuc=False
+  session = get_session(data["users"][user]["vk"]["vk_id"])
+  api = vk.API(session, v=VK_API_VERSION)
+  videoInfo = api.video.get(videos="%s_%s"%(attachment["video"]["owner_id"],attachment["video"]["id"]))["items"][0]
+  log.debug(videoInfo)
+  if videoInfo != None:
+    if "files" in videoInfo:
+      src=videoInfo["files"]["mp4_360"]
+      vidSuc=True
   try:
     log.debug("=start function=")
-    src=None
-    if 'first_frame_320' in attachment["video"]:
-      src=attachment["video"]['first_frame_320']
-    elif 'photo_320' in attachment["video"]:
-      src=attachment["video"]['photo_320']
-
+    if vidSuc==False:
+      mimetype="image/jpeg"
+      if 'first_frame_320' in attachment["video"]:
+        src=attachment["video"]['first_frame_320']
+      elif 'photo_320' in attachment["video"]:
+        src=attachment["video"]['photo_320']
+    else:
+      mimetype = "video/mp4"
     description=None
+    fdata=get_data_from_url(src)
+    mxc_url=upload_file(fdata,mimetype)
+    matrix_send_video(room, mxc_url, sender_name)
+    log.debug(vidSuc)
+    log.debug(mimetype)
     if 'description' in attachment["video"]:
       description=attachment["video"]["description"]
-    
-    image_data=get_data_from_url(src)
-    if image_data==None:
-      log.error("get image from url: %s"%src)
-      return False
-
-    # TODO добавить определение типа:
-    mimetype="image/jpeg"
-    size=len(image_data)
-      
-    mxc_url=upload_file(image_data,mimetype)
-    if mxc_url == None:
-      log.error("uload file to matrix server")
-      return False
-    log.debug("send file 1")
-    if "title" in attachment["video"]:
-      file_name=attachment["video"]["title"]+"(превью видео).jpg"
-    else:
-      file_name=get_name_from_url(src)
-
-    if sender_name!=None:
-      file_name=sender_name+' прислал изображение: '+file_name
-
-    if matrix_send_image(room,mxc_url,file_name,mimetype=mimetype,height=0,width=0,size=size) == False:
-      log.error("send file to room")
-      return False
     video_url="https://vk.com/video%(owner_id)s_%(vid)s"%{"owner_id":attachment["video"]["owner_id"],"vid":attachment["video"]["id"]}
-    message="Ссылка на просмотр потокового видео: %s"%video_url
+    message="Видео: %s <a href=\"%s\">Ссылка на страницу видео</a>"%(attachment["video"]["title"], video_url)
     if description!=None:
-      message+="\nОписание: %s"%description
-    ret=send_message(room,message)
+      message+="<br><b>Описание:</b> %s"%description
+    ret=send_html(room,message)
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
     log.error("exception at parse attachemt '%s': %s"%(attachment["type"],e))
@@ -2634,7 +2636,7 @@ def send_attachments(user,room,sender_name,attachments):
   global log
   try:
     log.debug("=start function=")
-    success_status=True
+    event=None
     for attachment in attachments:
       # Отправляем фото:
       if attachment["type"]=="photo":
@@ -2661,34 +2663,40 @@ def send_attachments(user,room,sender_name,attachments):
           success_status=False
       # Отправляем видео:
       elif attachment["type"]=="video":
-        if send_video_to_matrix(room,sender_name,attachment)==False:
+        event = send_video_to_matrix(room,sender_name,attachment, user)
+        if event ==False:
           log.error("send_video_to_matrix()")
           bot_system_message(user,"при разборе вложений с типом '%s' - произошли ошибки"%attachment["type"])
           success_status=False
       # документы:
       elif attachment["type"]=="doc":
         # иные прикреплённые документы:
-        if send_file_to_matrix(room,sender_name,attachment)==False:
+        event = send_file_to_matrix(room,sender_name,attachment)
+        if event ==False:
           log.error("send_file_to_matrix()")
           bot_system_message(user,"при разборе вложений с типом '%s' - произошли ошибки"%attachment["type"])
-          success_status=False
       # сообщение со стены:
       elif attachment["type"]=="wall":
-        if send_wall_to_matrix(room,sender_name,attachment)==False:
+        event = send_wall_to_matrix(room,sender_name,attachment)
+        if event==False:
           log.error("send_wall_to_matrix()")
           bot_system_message(user,"при разборе вложений с типом '%s' - произошли ошибки"%attachment["type"])
-          success_status=False
       # ссылка:
       elif attachment["type"]=="link":
         if send_link_to_matrix(room,sender_name,attachment)==False:
           log.error("send_link_to_matrix()")
           bot_system_message(user,"при разборе вложений с типом '%s' - произошли ошибки"%attachment["type"])
           success_status=False
+      elif attachment["type"]=="graffiti":
+        if send_graffiti_to_matrix(room,sender_name,attachment)==False:
+          log.error("send_photo_to_matrix()")
+          bot_system_message(user,"при разборе вложений с типом '%s' - произошли ошибки"%attachment["type"])
+          success_status=False
       else:
         log.error("unknown attachment type - skip. attachment type=%s"%attachment["type"])
         bot_system_message(user,"Из ВК пришёл неизвестный тип вложения (%s) для комнаты '%s'"%(attachment["type"],get_name_of_matrix_room(room)))
         send_message(room,"Из ВК пришёл неизвестный тип вложения (%s)"%attachment["type"])
-    return success_status
+    return event
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
     log.error("exception in send_attachments()")
@@ -2696,6 +2704,10 @@ def send_attachments(user,room,sender_name,attachments):
     log.error("json of attachments:")
     log.error(json.dumps(attachment, indent=4, sort_keys=True,ensure_ascii=False))
     return False
+
+def send_graffiti_to_matrix(room, sender, attachment):
+  print("graffiti")
+
 
 def get_data_from_url(url,referer=None):
   global log
@@ -2712,6 +2724,28 @@ def get_data_from_url(url,referer=None):
     return None
   return data
 
+def matrix_send_video(room_id,mxc,sender):
+  name="Video from %s.mp4"%sender
+  try:
+    room = client.join_room(room_id)
+  except MatrixRequestError as e:
+    print(e)
+    if e.code == 400:
+      log.error("Room ID/Alias in the wrong format")
+      return False
+    else:
+      log.error("Couldn't find room.")
+      return False
+  try:
+    ret=room.send_video(mxc,name)
+  except MatrixRequestError as e:
+    print(e)
+    if e.code == 400:
+      log.error("ERROR send video with mxurl=%s"%mxc)
+      return False
+    else:
+      log.error("Couldn't send audio (unknown error) with mxurl=%s"%mxc)
+      return False
 
 def matrix_send_audio(room_id,url,name,mimetype="audio/mpeg",size=0,duration=0):
   global log
@@ -2785,7 +2819,7 @@ def matrix_send_image(room_id,url,name,mimetype,height=None,width=None,size=None
     else:
       log.error("Couldn't send image (unknown error) with mxurl=%s"%url)
       return False
-  return True
+  return ret
 
 def matrix_send_file(room_id,url,name,mimetype,size):
   global log
@@ -3029,6 +3063,8 @@ def proccess_vk_message(bot_control_room,room,user,sender_name,m):
         if sender_name!=None:
           text+="<p><strong>%(sender_name)s</strong>:</p>\n"%{"sender_name":sender_name}
       else:
+        if sender_name!=None:
+          text+="<p><strong>%(sender_name)s</strong>:</p>\n"%{"sender_name":sender_name}
         text+=create_reply_forward_text_for_matrix(user,m["reply_message"])
       text+="<p>%s</p>\n" % m["text"]
     else:
