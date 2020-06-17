@@ -1837,7 +1837,7 @@ def on_invite(room, event):
         if allow == True:
           # Приглашение вступить в комнату:
           room = client.join_room(room)
-          room.send_text("Спасибо за приглашение! Недеюсь быть Вам полезным. :-)")
+          room.send_text("Спасибо за приглашение! Надеюсь быть Вам полезным. :-)")
           room.send_text("Для справки по доступным командам - наберите: '!help' (или '!?', или '!h')")
           log.info("New user: '%s'"%user)
           # Прописываем системную группу для пользователя (группа, в которую будут сыпаться системные сообщения от бота и где он будет слушать команды):
@@ -2170,14 +2170,18 @@ def send_file_to_matrix(room,sender_name,attachment):
 def create_reply_forward_text_for_matrix(user,fwd):
   global log
   global data
+  post=""
   try:
+    if "fwd_messages" in fwd and fwd["fwd_messages"]!=[]:
+      for msg in fwd["fwd_messages"]:
+        post+=create_reply_forward_text_for_matrix(user, msg)
     fwd_uid=fwd["from_id"]
     fwd_text=fwd["text"]
     user_profile=get_user_profile_by_uid(user,fwd_uid)
     fwd_user_name=fwd_uid
     if user_profile!=None:
       fwd_user_name="<a href=\"https://vk.com/id%s\">"%(user_profile["id"])+ user_profile["first_name"] + " " + user_profile["last_name"] + "</a>"
-    text="<blockquote>\n<p>Пересланное сообщение от <strong>%(fwd_user)s</strong>:</p><p>%(fwd_text)s</p>\n" % {"fwd_user":fwd_user_name, "fwd_text":fwd_text}
+    text="<blockquote>\n<p>Пересланное сообщение от <strong>%(fwd_user)s</strong>:</p><p>%(fwd_text)s</p>\n" % {"fwd_user":fwd_user_name, "fwd_text":fwd_text} + post
     # если это ответ на вложения, то добавляем их как ссылки:
     descr="вложение"
     if "attachments" in fwd:
@@ -2467,11 +2471,20 @@ def send_video_to_matrix(room,sender_name,attachment, user):
   log.debug(videoInfo)
   if videoInfo != None:
     if "files" in videoInfo:
-      src=videoInfo["files"]["mp4_360"]
-      vidSuc=True
+      if "mp4_480" in videoInfo["files"]:
+        src=videoInfo["files"]["mp4_480"]
+        vidSuc=True
+      elif "mp4_360" in videoInfo["files"]:
+        src=videoInfo["files"]["mp4_360"]
+        vidSuc=True
+      elif "mp4_240" in videoInfo["files"]:
+        src=videoInfo["files"]["mp4_240"]
+        vidSuc=True
+      elif "external" in videoInfo["files"]:
+        src=videoInfo["files"]["external"]
   try:
     log.debug("=start function=")
-    if vidSuc==False:
+    if src==None:
       mimetype="image/jpeg"
       if 'first_frame_320' in attachment["video"]:
         src=attachment["video"]['first_frame_320']
@@ -2480,18 +2493,22 @@ def send_video_to_matrix(room,sender_name,attachment, user):
     else:
       mimetype = "video/mp4"
     description=None
-    fdata=get_data_from_url(src)
-    mxc_url=upload_file(fdata,mimetype)
-    matrix_send_video(room, mxc_url, sender_name)
-    log.debug(vidSuc)
-    log.debug(mimetype)
-    if 'description' in attachment["video"]:
-      description=attachment["video"]["description"]
-    video_url="https://vk.com/video%(owner_id)s_%(vid)s"%{"owner_id":attachment["video"]["owner_id"],"vid":attachment["video"]["id"]}
-    message="Видео: %s <a href=\"%s\">Ссылка на страницу видео</a>"%(attachment["video"]["title"], video_url)
-    if description!=None:
-      message+="<br><b>Описание:</b> %s"%description
-    ret=send_html(room,message)
+    if vidSuc:
+      fdata=get_data_from_url(src)
+      mxc_url=upload_file(fdata,mimetype)
+      matrix_send_video(room, mxc_url, sender_name)
+      log.debug(vidSuc)
+      log.debug(mimetype)
+      if 'description' in attachment["video"]:
+        description=attachment["video"]["description"]
+      video_url="https://vk.com/video%(owner_id)s_%(vid)s"%{"owner_id":attachment["video"]["owner_id"],"vid":attachment["video"]["id"]}
+      message="Видео: %s <a href=\"%s\">Ссылка на страницу видео</a>"%(attachment["video"]["title"], video_url)
+      if description!=None:
+        message+="<br><b>Описание:</b> %s"%description
+      ret=send_html(room,message)
+    else:
+      message="<b>%s</b>: Видео %s: %s %s"%(sender_name, attachment["video"]["platform"], attachment["video"]["title"], src)
+      ret=send_html(room,message)
   except Exception as e:
     log.error(get_exception_traceback_descr(e))
     log.error("exception at parse attachemt '%s': %s"%(attachment["type"],e))
@@ -3075,7 +3092,7 @@ def proccess_vk_message(bot_control_room,room,user,sender_name,m):
         text=m["text"]
     log.debug("1")
 
-    if len(m["text"])>0:
+    if len(m["text"])>0 or m["fwd_messages"]!=[]:
       log.debug("send text='%s'"%text)
       event = send_html(room,text.replace('\n','<br>'), True) 
       if event != False:
